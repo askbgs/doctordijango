@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   description: "Modern doctor appointment booking SaaS platform",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
       <body className={`${inter.className} h-full bg-gray-50 antialiased`}>
