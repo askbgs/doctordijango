@@ -1,0 +1,552 @@
+{
+  "name": "G - Error Handling & Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow G — Error Handling & Monitoring\n\n**Section 1** (top): Error Trigger catches failures from other workflows, classifies them, handles retries for transient errors, and alerts admins for auth/critical errors.\n\n**Section 2** (bottom): Scheduled health-check that pings Supabase and WhatsApp API every 15 minutes.\n\n### Environment Variables Required\n- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`\n- `META_WHATSAPP_ACCESS_TOKEN` / `META_PHONE_NUMBER_ID` / `WHATSAPP_API_VERSION`\n- `STAFF_NOTIFICATION_WHATSAPP`\n- `N8N_BASE_URL` (for replaying workflows)",
+        "width": 560,
+        "height": 260
+      },
+      "id": "g-sticky-1",
+      "name": "Workflow Documentation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -200]
+    },
+
+    {
+      "parameters": {},
+      "id": "g-node-1",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const errorData = $input.first().json;\n\n// Sanitize sensitive data from error context\nfunction sanitize(obj) {\n  if (!obj) return obj;\n  const str = typeof obj === 'string' ? obj : JSON.stringify(obj);\n  return str\n    // Strip known secret env var patterns\n    .replace(/Bearer\\s+[A-Za-z0-9\\-._~+\\/]+=*/g, 'Bearer [REDACTED]')\n    .replace(/eyJ[A-Za-z0-9\\-_]+\\.[A-Za-z0-9\\-_]+\\.[A-Za-z0-9\\-_]+/g, '[REDACTED_JWT]')\n    .replace(/sk-ant-[A-Za-z0-9\\-]+/g, '[REDACTED_ANTHROPIC_KEY]')\n    .replace(/sbp_[A-Za-z0-9]+/g, '[REDACTED_SUPABASE_KEY]')\n    .replace(/EAA[A-Za-z0-9]+/g, '[REDACTED_META_TOKEN]')\n    // Mask phone numbers: keep last 4 digits\n    .replace(/(\\+?\\d{1,3})?[\\s.-]?\\(?\\d{2,4}\\)?[\\s.-]?\\d{3,4}[\\s.-]?(\\d{4})/g, '***$2')\n    // Mask emails\n    .replace(/[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]')\n    // Remove Authorization header values\n    .replace(/\"Authorization\"\\s*:\\s*\"[^\"]+\"/gi, '\"Authorization\": \"[REDACTED]\"')\n    .replace(/\"apikey\"\\s*:\\s*\"[^\"]+\"/gi, '\"apikey\": \"[REDACTED]\"');\n}\n\nconst execution = errorData.execution || {};\nconst workflow = errorData.workflow || {};\nconst lastNodeExecuted = execution.lastNodeExecuted || 'unknown';\nconst errorMessage = execution.error?.message || errorData.message || 'Unknown error';\nconst statusCode = execution.error?.httpCode || execution.error?.statusCode || null;\n\n// Classify the error\nlet classification = 'critical'; // default to critical\nif (statusCode) {\n  const code = parseInt(statusCode, 10);\n  if (code === 429 || code === 502 || code === 503 || code === 504) {\n    classification = 'transient';\n  } else if (code === 401 || code === 403) {\n    classification = 'auth';\n  } else if (code === 400 || code === 404 || code === 422) {\n    classification = 'client';\n  } else if (code >= 500) {\n    classification = 'critical';\n  }\n} else if (/timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up/i.test(errorMessage)) {\n  classification = 'transient';\n} else if (/unauthorized|forbidden|auth/i.test(errorMessage)) {\n  classification = 'auth';\n} else if (/not found|invalid|validation|bad request/i.test(errorMessage)) {\n  classification = 'client';\n}\n\nconst retryCount = errorData._retryCount || 0;\n\nreturn [{\n  json: {\n    classification,\n    workflow_id: workflow.id || null,\n    workflow_name: workflow.name || 'unknown',\n    execution_id: execution.id || null,\n    failed_node: lastNodeExecuted,\n    error_message: sanitize(errorMessage),\n    status_code: statusCode,\n    timestamp: new Date().toISOString(),\n    context_sanitized: sanitize(JSON.stringify(execution.data || {}).slice(0, 2000)),\n    retry_count: retryCount\n  }\n}];"
+      },
+      "id": "g-node-2",
+      "name": "Parse & Sanitize Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 100]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "transient",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 0,
+              "renameOutput": true,
+              "outputLabel": "Transient"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "auth",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 1,
+              "renameOutput": true,
+              "outputLabel": "Auth"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "client",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 2,
+              "renameOutput": true,
+              "outputLabel": "Client"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "critical",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 3,
+              "renameOutput": true,
+              "outputLabel": "Critical"
+            }
+          ],
+          "fallbackOutput": {
+            "type": "extra",
+            "outputIndex": 3
+          }
+        },
+        "options": {}
+      },
+      "id": "g-node-3",
+      "name": "Error Classification",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [700, 100]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst retryCount = item.retry_count || 0;\nconst maxRetries = 3;\n\nreturn [{\n  json: {\n    ...item,\n    can_retry: retryCount < maxRetries,\n    next_retry_count: retryCount + 1,\n    backoff_seconds: Math.pow(2, retryCount + 1) // 2, 4, 8\n  }\n}];"
+      },
+      "id": "g-node-4",
+      "name": "Check Retry Count",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, -40]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-can-retry",
+              "leftValue": "={{ $json.can_retry }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-node-5",
+      "name": "Can Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, -40]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.backoff_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "g-node-6",
+      "name": "Backoff Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1440, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_BASE_URL }}/api/v1/executions/{{ $json.execution_id }}/retry",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "id": "g-node-7",
+      "name": "Retry Failed Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, -100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.STAFF_NOTIFICATION_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"⚠️ *AUTH ERROR*\\n\\nWorkflow: {{ $('Parse & Sanitize Error').item.json.workflow_name }}\\nNode: {{ $('Parse & Sanitize Error').item.json.failed_node }}\\nError: {{ $('Parse & Sanitize Error').item.json.error_message }}\\nTime: {{ $('Parse & Sanitize Error').item.json.timestamp }}\\n\\nPlease check your API credentials.\"\n  }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "g-node-10",
+      "name": "Alert Admin: Auth Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"workflow_error\",\n  \"entity_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"action\": \"auth_error\",\n  \"changes\": {\n    \"workflow\": \"{{ $('Parse & Sanitize Error').item.json.workflow_name }}\",\n    \"node\": \"{{ $('Parse & Sanitize Error').item.json.failed_node }}\",\n    \"error\": \"{{ $('Parse & Sanitize Error').item.json.error_message }}\",\n    \"status_code\": {{ $('Parse & Sanitize Error').item.json.status_code || 'null' }}\n  }\n}",
+        "options": {}
+      },
+      "id": "g-node-11",
+      "name": "Log Auth Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"workflow_error\",\n  \"entity_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"action\": \"client_error\",\n  \"changes\": {\n    \"workflow\": \"{{ $('Parse & Sanitize Error').item.json.workflow_name }}\",\n    \"node\": \"{{ $('Parse & Sanitize Error').item.json.failed_node }}\",\n    \"error\": \"{{ $('Parse & Sanitize Error').item.json.error_message }}\",\n    \"classification\": \"client\"\n  }\n}",
+        "options": {}
+      },
+      "id": "g-node-12",
+      "name": "Log Client Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 240]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.STAFF_NOTIFICATION_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"🚨 *CRITICAL ERROR*\\n\\nWorkflow: {{ $('Parse & Sanitize Error').item.json.workflow_name }}\\nNode: {{ $('Parse & Sanitize Error').item.json.failed_node }}\\nError: {{ $('Parse & Sanitize Error').item.json.error_message }}\\nExecution: {{ $('Parse & Sanitize Error').item.json.execution_id }}\\nTime: {{ $('Parse & Sanitize Error').item.json.timestamp }}\\n\\nImmediate attention required!\"\n  }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "g-node-13",
+      "name": "Alert Admin: Critical",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"workflow_error\",\n  \"entity_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"action\": \"critical_error\",\n  \"changes\": {\n    \"workflow\": \"{{ $('Parse & Sanitize Error').item.json.workflow_name }}\",\n    \"node\": \"{{ $('Parse & Sanitize Error').item.json.failed_node }}\",\n    \"error\": \"{{ $('Parse & Sanitize Error').item.json.error_message }}\",\n    \"execution_id\": \"{{ $('Parse & Sanitize Error').item.json.execution_id }}\",\n    \"context\": \"{{ $('Parse & Sanitize Error').item.json.context_sanitized }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "g-node-14",
+      "name": "Log Critical Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 380]
+    },
+
+    {
+      "parameters": {
+        "content": "## Health Check\nRuns every 15 minutes.\nPings Supabase and WhatsApp API to verify connectivity.\nAlerts admin if either service is unreachable.",
+        "width": 400,
+        "height": 120
+      },
+      "id": "g-sticky-2",
+      "name": "Health Check Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [100, 620]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 15 }
+          ]
+        }
+      },
+      "id": "g-node-20",
+      "name": "Schedule: Every 15 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 780]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/?select=count",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "g-node-21",
+      "name": "Ping Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 720]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "g-node-22",
+      "name": "Ping WhatsApp API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 860]
+    },
+    {
+      "parameters": {
+        "jsCode": "const supabaseResult = $('Ping Supabase').first().json;\nconst whatsappResult = $('Ping WhatsApp API').first().json;\n\nconst supabaseOk = !supabaseResult.error && (supabaseResult.statusCode === undefined || supabaseResult.statusCode < 400);\nconst whatsappOk = !whatsappResult.error && whatsappResult.id;\n\nconst failures = [];\nif (!supabaseOk) failures.push('Supabase');\nif (!whatsappOk) failures.push('WhatsApp API');\n\nreturn [{\n  json: {\n    all_healthy: failures.length === 0,\n    failures,\n    supabase_ok: supabaseOk,\n    whatsapp_ok: whatsappOk,\n    checked_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "g-node-23",
+      "name": "Evaluate Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 780]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-unhealthy",
+              "leftValue": "={{ $json.all_healthy }}",
+              "rightValue": false,
+              "operator": { "type": "boolean", "operation": "false" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-node-24",
+      "name": "Any Failures?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 780]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.STAFF_NOTIFICATION_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"🏥 *HEALTH CHECK FAILED*\\n\\nThe following services are DOWN:\\n{{ $json.failures.join(', ') }}\\n\\nChecked at: {{ $json.checked_at }}\\n\\nPlease investigate immediately.\"\n  }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "g-node-25",
+      "name": "Alert: Service Down",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 720]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"health_check\",\n  \"entity_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"action\": \"health_check_failed\",\n  \"changes\": {\n    \"failures\": {{ JSON.stringify($json.failures) }},\n    \"checked_at\": \"{{ $json.checked_at }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "g-node-26",
+      "name": "Log Health Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 720]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.STAFF_NOTIFICATION_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"🚨 *CRITICAL — Retries exhausted*\\n\\nWorkflow: {{ $json.workflow_name }}\\nNode: {{ $json.failed_node }}\\nError: {{ $json.error_message }}\\nRetries: {{ $json.retry_count }}/3\\n\\nManual intervention required.\"\n  }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "g-node-30",
+      "name": "Alert: Retries Exhausted",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 20]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [{ "node": "Parse & Sanitize Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse & Sanitize Error": {
+      "main": [
+        [{ "node": "Error Classification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Error Classification": {
+      "main": [
+        [{ "node": "Check Retry Count", "type": "main", "index": 0 }],
+        [{ "node": "Alert Admin: Auth Error", "type": "main", "index": 0 }],
+        [{ "node": "Log Client Error", "type": "main", "index": 0 }],
+        [{ "node": "Alert Admin: Critical", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Check Retry Count": {
+      "main": [
+        [{ "node": "Can Retry?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Can Retry?": {
+      "main": [
+        [{ "node": "Backoff Wait", "type": "main", "index": 0 }],
+        [{ "node": "Alert: Retries Exhausted", "type": "main", "index": 0 }]
+      ]
+    },
+    "Backoff Wait": {
+      "main": [
+        [{ "node": "Retry Failed Execution", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Alert Admin: Auth Error": {
+      "main": [
+        [{ "node": "Log Auth Error", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Alert Admin: Critical": {
+      "main": [
+        [{ "node": "Log Critical Error", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Schedule: Every 15 Min": {
+      "main": [
+        [
+          { "node": "Ping Supabase", "type": "main", "index": 0 },
+          { "node": "Ping WhatsApp API", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ping Supabase": {
+      "main": [
+        [{ "node": "Evaluate Health", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ping WhatsApp API": {
+      "main": [
+        [{ "node": "Evaluate Health", "type": "main", "index": 0 }]
+      ]
+    },
+    "Evaluate Health": {
+      "main": [
+        [{ "node": "Any Failures?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Failures?": {
+      "main": [
+        [{ "node": "Alert: Service Down", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Alert: Service Down": {
+      "main": [
+        [{ "node": "Log Health Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp-sales-agent" },
+    { "name": "error-handling" },
+    { "name": "monitoring" }
+  ]
+}

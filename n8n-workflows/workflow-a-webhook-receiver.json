@@ -1,0 +1,424 @@
+{
+  "name": "WhatsApp Webhook Receiver",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "={{$parameter.httpMethod}}",
+        "path": "whatsapp-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000001-0000-0000-0000-000000000001",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "whatsapp-webhook-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming Meta webhook request and determine event type\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const body = item.json.body || item.json;\n  const query = item.json.query || {};\n  const method = item.json.headers?.['x-http-method'] || 'POST';\n\n  // Handle GET verification request from Meta\n  if (query['hub.mode'] === 'subscribe' && query['hub.verify_token']) {\n    results.push({\n      json: {\n        eventType: 'verification',\n        challenge: query['hub.challenge'] || '',\n        verifyToken: query['hub.verify_token'],\n        mode: query['hub.mode']\n      }\n    });\n    continue;\n  }\n\n  // Validate webhook payload structure\n  if (!body.object || body.object !== 'whatsapp_business_account') {\n    results.push({\n      json: {\n        eventType: 'invalid',\n        error: 'Invalid webhook payload: missing or wrong object field',\n        rawBody: JSON.stringify(body).substring(0, 500)\n      }\n    });\n    continue;\n  }\n\n  if (!body.entry || !Array.isArray(body.entry) || body.entry.length === 0) {\n    results.push({\n      json: {\n        eventType: 'invalid',\n        error: 'Invalid webhook payload: missing entry array'\n      }\n    });\n    continue;\n  }\n\n  // Process each entry and change\n  for (const entry of body.entry) {\n    const changes = entry.changes || [];\n    for (const change of changes) {\n      const value = change.value || {};\n\n      if (value.messages && value.messages.length > 0) {\n        for (const message of value.messages) {\n          results.push({\n            json: {\n              eventType: 'message',\n              wabaId: entry.id,\n              phoneNumberId: value.metadata?.phone_number_id || '',\n              displayPhone: value.metadata?.display_phone_number || '',\n              message: message,\n              contacts: value.contacts || [],\n              timestamp: message.timestamp\n            }\n          });\n        }\n      } else if (value.statuses && value.statuses.length > 0) {\n        for (const status of value.statuses) {\n          results.push({\n            json: {\n              eventType: 'status',\n              wabaId: entry.id,\n              phoneNumberId: value.metadata?.phone_number_id || '',\n              status: status\n            }\n          });\n        }\n      } else {\n        results.push({\n          json: {\n            eventType: 'unknown',\n            wabaId: entry.id,\n            value: value\n          }\n        });\n      }\n    }\n  }\n}\n\nreturn results.length > 0 ? results : [{ json: { eventType: 'empty' } }];"
+      },
+      "id": "a1000001-0000-0000-0000-000000000002",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.eventType }}",
+                    "rightValue": "message",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Messages"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.eventType }}",
+                    "rightValue": "status",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Statuses"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.eventType }}",
+                    "rightValue": "verification",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Verification"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Other"
+        }
+      },
+      "id": "a1000001-0000-0000-0000-000000000003",
+      "name": "Route Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize inbound WhatsApp message into a standard format\nconst item = $input.first();\nconst msg = item.json.message;\nconst contacts = item.json.contacts || [];\nconst contact = contacts.length > 0 ? contacts[0] : {};\n\nlet messageBody = '';\nlet messageType = msg.type || 'unknown';\n\nswitch (messageType) {\n  case 'text':\n    messageBody = msg.text?.body || '';\n    break;\n  case 'image':\n    messageBody = msg.image?.caption || '[Image]';\n    break;\n  case 'document':\n    messageBody = msg.document?.caption || '[Document]';\n    break;\n  case 'audio':\n    messageBody = '[Audio message]';\n    break;\n  case 'video':\n    messageBody = msg.video?.caption || '[Video]';\n    break;\n  case 'location':\n    messageBody = `[Location: ${msg.location?.latitude}, ${msg.location?.longitude}]`;\n    break;\n  case 'contacts':\n    messageBody = '[Contact shared]';\n    break;\n  case 'interactive':\n    if (msg.interactive?.type === 'button_reply') {\n      messageBody = msg.interactive.button_reply?.title || '';\n    } else if (msg.interactive?.type === 'list_reply') {\n      messageBody = msg.interactive.list_reply?.title || '';\n    }\n    break;\n  case 'button':\n    messageBody = msg.button?.text || '';\n    break;\n  case 'reaction':\n    messageBody = `[Reaction: ${msg.reaction?.emoji || ''}]`;\n    break;\n  default:\n    messageBody = `[Unsupported message type: ${messageType}]`;\n}\n\nreturn [{\n  json: {\n    whatsappMessageId: msg.id || '',\n    senderWaId: msg.from || '',\n    senderName: contact.profile?.name || '',\n    senderPhone: contact.wa_id || msg.from || '',\n    timestamp: msg.timestamp || '',\n    messageType: messageType,\n    messageBody: messageBody,\n    rawMessage: msg,\n    phoneNumberId: item.json.phoneNumberId || '',\n    wabaId: item.json.wabaId || ''\n  }\n}];"
+      },
+      "id": "a1000001-0000-0000-0000-000000000004",
+      "name": "Normalize Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/check_webhook_processed",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $json.whatsappMessageId, p_event_type: 'inbound_message' }) }}",
+        "options": {
+          "response": { "response": { "fullResponse": true } }
+        }
+      },
+      "id": "a1000001-0000-0000-0000-000000000005",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "dup-check",
+              "leftValue": "={{ $json.body?.already_processed }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a1000001-0000-0000-0000-000000000006",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1440, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/processed_webhook_events",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event_id: $('Normalize Message').item.json.whatsappMessageId, event_type: 'inbound_message', metadata: { sender: $('Normalize Message').item.json.senderWaId, type: $('Normalize Message').item.json.messageType } }) }}"
+      },
+      "id": "a1000001-0000-0000-0000-000000000007",
+      "name": "Mark Processed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_WEBHOOK_URL }}/webhook/process-message",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ whatsappMessageId: $('Normalize Message').item.json.whatsappMessageId, senderWaId: $('Normalize Message').item.json.senderWaId, senderName: $('Normalize Message').item.json.senderName, senderPhone: $('Normalize Message').item.json.senderPhone, timestamp: $('Normalize Message').item.json.timestamp, messageType: $('Normalize Message').item.json.messageType, messageBody: $('Normalize Message').item.json.messageBody, phoneNumberId: $('Normalize Message').item.json.phoneNumberId, wabaId: $('Normalize Message').item.json.wabaId }) }}",
+        "options": {
+          "timeout": 55000
+        }
+      },
+      "id": "a1000001-0000-0000-0000-000000000008",
+      "name": "Trigger Conversation Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 120]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.challenge }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1000001-0000-0000-0000-000000000009",
+      "name": "Respond Verification",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the token and prepare the challenge response\nconst item = $input.first();\nconst expectedToken = $env.META_WEBHOOK_VERIFY_TOKEN || '';\nconst receivedToken = item.json.verifyToken || '';\n\nif (!expectedToken) {\n  throw new Error('META_WEBHOOK_VERIFY_TOKEN environment variable not set');\n}\n\nif (receivedToken !== expectedToken) {\n  throw new Error('Webhook verification failed: token mismatch');\n}\n\nreturn [{\n  json: {\n    challenge: parseInt(item.json.challenge) || item.json.challenge\n  }\n}];"
+      },
+      "id": "a1000001-0000-0000-0000-00000000000a",
+      "name": "Verify Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 600]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "whatsapp_message_id", "value": "=eq.{{ $json.status.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $json.status.status }) }}"
+      },
+      "id": "a1000001-0000-0000-0000-00000000000b",
+      "name": "Update Message Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 400],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1000001-0000-0000-0000-00000000000c",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2160, 120]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1000001-0000-0000-0000-00000000000d",
+      "name": "Respond OK Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Duplicate ignored",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1000001-0000-0000-0000-00000000000e",
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1680, 280]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1000001-0000-0000-0000-00000000000f",
+      "name": "Respond Other",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 740]
+    },
+    {
+      "parameters": {
+        "content": "## WhatsApp Webhook Receiver (Workflow A)\n\n**Purpose:** Receives all inbound WhatsApp webhook events from Meta.\n\n**Flow:**\n1. Meta sends POST to /whatsapp-webhook\n2. Validate payload structure\n3. Route by event type (message, status, verification)\n4. For messages: deduplicate, mark processed, forward to AI conversation workflow\n5. For verification: validate token, respond with challenge\n6. For statuses: update message delivery status in DB\n\n**Required Environment Variables:**\n- META_WEBHOOK_VERIFY_TOKEN\n- SUPABASE_URL\n- SUPABASE_SERVICE_ROLE_KEY\n- N8N_WEBHOOK_URL",
+        "height": 380,
+        "width": 400,
+        "color": 4
+      },
+      "id": "a1000001-0000-0000-0000-0000000000f0",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-100, 180]
+    },
+    {
+      "parameters": {
+        "content": "## Deduplication Path\nChecks processed_webhook_events table to prevent duplicate processing from Meta webhook retries.",
+        "height": 120,
+        "width": 500,
+        "color": 6
+      },
+      "id": "a1000001-0000-0000-0000-0000000000f1",
+      "name": "Sticky Note Dedup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1180, 60]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          { "node": "Validate Request", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          { "node": "Route Event", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Route Event": {
+      "main": [
+        [
+          { "node": "Normalize Message", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Update Message Status", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Verify Token", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Respond Other", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Normalize Message": {
+      "main": [
+        [
+          { "node": "Check Duplicate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          { "node": "Is Duplicate?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [
+          { "node": "Respond Duplicate", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Mark Processed", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Mark Processed": {
+      "main": [
+        [
+          { "node": "Trigger Conversation Workflow", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Trigger Conversation Workflow": {
+      "main": [
+        [
+          { "node": "Respond OK", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Verify Token": {
+      "main": [
+        [
+          { "node": "Respond Verification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Update Message Status": {
+      "main": [
+        [
+          { "node": "Respond OK Status", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp" },
+    { "name": "webhook" },
+    { "name": "clothing-shop" }
+  ]
+}

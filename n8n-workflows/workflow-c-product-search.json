@@ -1,0 +1,234 @@
+{
+  "name": "C - Product Search and Recommendations",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow C: Product Search & Recommendations\n\nCalled by the AI Sales Agent (Workflow B) when it uses the `search_products` tool.\n\n**Inputs:** category, min_price, max_price, size, colour, gender, keyword\n**Output:** Formatted product list with stock info\n\n**Environment Variables Required:**\n- SUPABASE_URL\n- SUPABASE_SERVICE_ROLE_KEY",
+        "width": 480,
+        "height": 260
+      },
+      "id": "c-sticky-1",
+      "name": "Workflow Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 100]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "search-products",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c-webhook-1",
+      "name": "Search Products Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 440],
+      "webhookId": "search-products-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Supabase PostgREST query from search parameters\nconst input = $input.first().json.body || $input.first().json;\n\nconst category = (input.category || '').trim().toLowerCase();\nconst minPrice = parseFloat(input.min_price) || 0;\nconst maxPrice = parseFloat(input.max_price) || 999999;\nconst size = (input.size || '').trim().toUpperCase();\nconst colour = (input.colour || '').trim().toLowerCase();\nconst gender = (input.gender || '').trim().toLowerCase();\nconst keyword = (input.keyword || '').trim().toLowerCase();\nconst limit = Math.min(parseInt(input.limit) || 10, 20);\n\n// Build PostgREST query params for the products table\n// We query products with a select that embeds product_variants\nlet queryParts = [];\nqueryParts.push('is_active=eq.true');\n\nif (category) {\n  queryParts.push(`category=eq.${encodeURIComponent(category)}`);\n}\nif (gender && ['men', 'women', 'unisex', 'kids'].includes(gender)) {\n  queryParts.push(`gender=in.(${encodeURIComponent(gender)},unisex)`);\n}\nif (keyword) {\n  queryParts.push(`or=(name.ilike.*${encodeURIComponent(keyword)}*,description.ilike.*${encodeURIComponent(keyword)}*,tags.cs.{${encodeURIComponent(keyword)}})`);\n}\n\n// Price filter: use effective price (sale_price if set, else base_price)\nif (minPrice > 0) {\n  queryParts.push(`or=(and(sale_price.not.is.null,sale_price.gte.${minPrice}),and(sale_price.is.null,base_price.gte.${minPrice}))`);\n}\nif (maxPrice < 999999) {\n  queryParts.push(`or=(and(sale_price.not.is.null,sale_price.lte.${maxPrice}),and(sale_price.is.null,base_price.lte.${maxPrice}))`);\n}\n\n// Select with embedded variants\nconst selectFields = 'id,sku,name,description,category,brand,gender,base_price,sale_price,currency,image_urls,tags,product_variants!inner(id,size,colour,sku,available_quantity,reserved_quantity,is_active)';\n\nlet queryString = queryParts.join('&');\n\nreturn [{\n  json: {\n    queryString,\n    selectFields,\n    limit,\n    filterSize: size,\n    filterColour: colour,\n    filterMinPrice: minPrice,\n    filterMaxPrice: maxPrice\n  }\n}];"
+      },
+      "id": "c-code-build-query",
+      "name": "Build Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 440]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/products",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "={{ $json.selectFields }}"
+            },
+            {
+              "name": "limit",
+              "value": "={{ $json.limit * 3 }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "options": {
+          "fullResponse": true,
+          "timeout": 10000
+        }
+      },
+      "id": "c-http-query",
+      "name": "Query Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter, group, and format product results\nconst response = $input.first().json;\nconst products = response.body || response;\nconst prev = $('Build Query').first().json;\nconst filterSize = prev.filterSize;\nconst filterColour = prev.filterColour;\nconst limit = prev.limit || 10;\n\nif (!Array.isArray(products) || products.length === 0) {\n  return [{ json: { products: [], total: 0, message: 'No products found matching your criteria.' } }];\n}\n\nconst formatted = [];\n\nfor (const product of products) {\n  let variants = (product.product_variants || []).filter(v => v.is_active);\n\n  // Filter by size if specified\n  if (filterSize) {\n    variants = variants.filter(v => v.size.toUpperCase() === filterSize);\n  }\n  // Filter by colour if specified\n  if (filterColour) {\n    variants = variants.filter(v => v.colour.toLowerCase() === filterColour.toLowerCase());\n  }\n  // Only include variants with available stock\n  variants = variants.filter(v => (v.available_quantity - v.reserved_quantity) > 0);\n\n  if (variants.length === 0) continue;\n\n  const effectivePrice = product.sale_price || product.base_price;\n  const isOnSale = product.sale_price !== null && product.sale_price < product.base_price;\n\n  const sizes = [...new Set(variants.map(v => v.size))];\n  const colours = [...new Set(variants.map(v => v.colour))];\n  const totalStock = variants.reduce((sum, v) => sum + (v.available_quantity - v.reserved_quantity), 0);\n\n  formatted.push({\n    product_id: product.id,\n    sku: product.sku,\n    name: product.name,\n    description: product.description,\n    category: product.category,\n    brand: product.brand,\n    gender: product.gender,\n    price: effectivePrice,\n    original_price: isOnSale ? product.base_price : null,\n    is_on_sale: isOnSale,\n    currency: product.currency || 'LKR',\n    available_sizes: sizes,\n    available_colours: colours,\n    total_stock: totalStock,\n    image_url: (product.image_urls && product.image_urls.length > 0) ? product.image_urls[0] : null,\n    variants: variants.map(v => ({\n      variant_id: v.id,\n      size: v.size,\n      colour: v.colour,\n      sku: v.sku,\n      stock: v.available_quantity - v.reserved_quantity\n    }))\n  });\n}\n\n// Sort by relevance: on-sale items first, then by price ascending\nformatted.sort((a, b) => {\n  if (a.is_on_sale && !b.is_on_sale) return -1;\n  if (!a.is_on_sale && b.is_on_sale) return 1;\n  return a.price - b.price;\n});\n\nconst results = formatted.slice(0, limit);\n\nreturn [{\n  json: {\n    products: results,\n    total: results.length,\n    message: results.length > 0\n      ? `Found ${results.length} product(s) matching your criteria.`\n      : 'No products found matching your criteria.'\n  }\n}];"
+      },
+      "id": "c-code-filter",
+      "name": "Filter & Format Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the final response for the AI tool call\nconst data = $input.first().json;\n\nconst responseBody = {\n  success: true,\n  data: {\n    products: data.products,\n    total_results: data.total,\n    message: data.message\n  }\n};\n\nreturn [{ json: responseBody }];"
+      },
+      "id": "c-code-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "c-respond-1",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: 'Product search failed. Please try again.', data: { products: [], total_results: 0 } }) }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "c-respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, 660]
+    },
+    {
+      "parameters": {},
+      "id": "c-error-trigger",
+      "name": "On Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [1160, 660]
+    }
+  ],
+  "connections": {
+    "Search Products Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Query": {
+      "main": [
+        [
+          {
+            "node": "Query Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Supabase": {
+      "main": [
+        [
+          {
+            "node": "Filter & Format Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Format Results": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Error": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "whatsapp-sales-agent"
+    },
+    {
+      "name": "sub-workflow"
+    }
+  ]
+}

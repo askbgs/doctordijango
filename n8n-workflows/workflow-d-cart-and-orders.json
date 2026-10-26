@@ -1,0 +1,710 @@
+{
+  "name": "D - Shopping Cart and Order Placement",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow D: Shopping Cart & Order Placement\n\nHandles all cart and order operations for the AI Sales Agent.\n\n**Operations:** add_to_cart, update_cart_item, remove_from_cart, get_cart, create_order, get_order_status\n\n**Environment Variables Required:**\n- SUPABASE_URL\n- SUPABASE_SERVICE_ROLE_KEY",
+        "width": 480,
+        "height": 220
+      },
+      "id": "d-sticky-1",
+      "name": "Workflow Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 80]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cart-order",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "d-webhook-1",
+      "name": "Cart/Order Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 400],
+      "webhookId": "cart-order-webhook"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.operation || $json.operation }}", "rightValue": "add_to_cart", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "add_to_cart"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.operation || $json.operation }}", "rightValue": "get_cart", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "get_cart"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.operation || $json.operation }}", "rightValue": "create_order", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "create_order"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.operation || $json.operation }}", "rightValue": "get_order_status", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "get_order_status"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  { "leftValue": "={{ $json.body.operation || $json.operation }}", "rightValue": "remove_from_cart", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "remove_from_cart"
+            }
+          ],
+          "fallbackOutput": {
+            "type": "extra",
+            "output": "extra"
+          }
+        },
+        "options": {}
+      },
+      "id": "d-switch-1",
+      "name": "Route Operation",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ADD TO CART: Validate inputs and check stock\nconst input = $input.first().json.body || $input.first().json;\nconst customerId = input.customer_id;\nconst variantId = input.variant_id;\nconst quantity = parseInt(input.quantity) || 1;\n\nif (!customerId || !variantId) {\n  return [{ json: { error: true, message: 'customer_id and variant_id are required.' } }];\n}\nif (quantity < 1 || quantity > 10) {\n  return [{ json: { error: true, message: 'Quantity must be between 1 and 10.' } }];\n}\n\nreturn [{ json: { customerId, variantId, quantity } }];"
+      },
+      "id": "d-code-validate-add",
+      "name": "Validate Add to Cart",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "d-if-validate-add",
+      "name": "Validation OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/product_variants",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,product_id,size,colour,sku,available_quantity,reserved_quantity,is_active,products(id,name,base_price,sale_price,currency,image_urls)" },
+            { "name": "id", "value": "=eq.{{ $('Validate Add to Cart').item.json.variantId }}" },
+            { "name": "is_active", "value": "eq.true" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-check-stock",
+      "name": "Check Variant Stock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate stock availability and prepare cart upsert\nconst variants = $input.first().json;\nconst variantArr = Array.isArray(variants) ? variants : [variants];\nconst validationData = $('Validate Add to Cart').first().json;\nconst requestedQty = validationData.quantity;\nconst customerId = validationData.customerId;\n\nif (!variantArr || variantArr.length === 0 || !variantArr[0].id) {\n  return [{ json: { success: false, error: 'Product variant not found or is inactive.' } }];\n}\n\nconst variant = variantArr[0];\nconst available = variant.available_quantity - variant.reserved_quantity;\n\nif (available < requestedQty) {\n  return [{ json: { success: false, error: available > 0 ? `Only ${available} item(s) available.` : 'This item is currently out of stock.' } }];\n}\n\nconst product = variant.products;\nconst unitPrice = product.sale_price || product.base_price;\n\nreturn [{\n  json: {\n    success: true,\n    customerId,\n    variantId: variant.id,\n    productId: variant.product_id,\n    quantity: requestedQty,\n    unitPrice,\n    productName: product.name,\n    size: variant.size,\n    colour: variant.colour,\n    currency: product.currency || 'LKR',\n    imageUrl: (product.image_urls && product.image_urls.length > 0) ? product.image_urls[0] : null\n  }\n}];"
+      },
+      "id": "d-code-stock-check",
+      "name": "Verify Stock & Price",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/upsert_cart_item",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_customer_id: $json.customerId, p_product_id: $json.productId, p_variant_id: $json.variantId, p_quantity: $json.quantity, p_unit_price: $json.unitPrice }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-upsert-cart",
+      "name": "Upsert Cart Item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format add-to-cart success response\nconst cartData = $('Verify Stock & Price').first().json;\n\nreturn [{\n  json: {\n    success: true,\n    message: `Added ${cartData.quantity}x ${cartData.productName} (${cartData.size}, ${cartData.colour}) to your cart.`,\n    item: {\n      product_name: cartData.productName,\n      size: cartData.size,\n      colour: cartData.colour,\n      quantity: cartData.quantity,\n      unit_price: cartData.unitPrice,\n      currency: cartData.currency\n    }\n  }\n}];"
+      },
+      "id": "d-code-cart-response",
+      "name": "Cart Add Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "// GET CART: Retrieve current cart for customer\nconst input = $input.first().json.body || $input.first().json;\nconst customerId = input.customer_id;\n\nif (!customerId) {\n  return [{ json: { error: true, message: 'customer_id is required.' } }];\n}\n\nreturn [{ json: { customerId } }];"
+      },
+      "id": "d-code-get-cart-prep",
+      "name": "Prepare Get Cart",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/carts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,status,cart_items(id,quantity,unit_price,product_id,variant_id,products(name,image_urls),product_variants(size,colour,sku,available_quantity,reserved_quantity))" },
+            { "name": "customer_id", "value": "=eq.{{ $json.customerId }}" },
+            { "name": "status", "value": "eq.active" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-get-cart",
+      "name": "Fetch Cart",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the cart for display\nconst carts = $input.first().json;\nconst cartArr = Array.isArray(carts) ? carts : [carts];\n\nif (!cartArr || cartArr.length === 0 || !cartArr[0].id) {\n  return [{ json: { success: true, cart: { items: [], subtotal: 0, currency: 'LKR', message: 'Your cart is empty.' } } }];\n}\n\nconst cart = cartArr[0];\nconst items = (cart.cart_items || []).map(item => {\n  const product = item.products || {};\n  const variant = item.product_variants || {};\n  const available = (variant.available_quantity || 0) - (variant.reserved_quantity || 0);\n  return {\n    cart_item_id: item.id,\n    product_name: product.name || 'Unknown',\n    size: variant.size,\n    colour: variant.colour,\n    sku: variant.sku,\n    quantity: item.quantity,\n    unit_price: item.unit_price,\n    line_total: item.quantity * item.unit_price,\n    in_stock: available >= item.quantity\n  };\n});\n\nconst subtotal = items.reduce((sum, item) => sum + item.line_total, 0);\n\nreturn [{\n  json: {\n    success: true,\n    cart: {\n      cart_id: cart.id,\n      items,\n      item_count: items.length,\n      subtotal,\n      currency: 'LKR',\n      message: items.length > 0 ? `You have ${items.length} item(s) in your cart.` : 'Your cart is empty.'\n    }\n  }\n}];"
+      },
+      "id": "d-code-format-cart",
+      "name": "Format Cart",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// CREATE ORDER: Validate all required order fields\nconst input = $input.first().json.body || $input.first().json;\n\nconst required = ['customer_id', 'customer_name', 'delivery_address', 'payment_method'];\nconst missing = required.filter(f => !input[f] || String(input[f]).trim() === '');\n\nif (missing.length > 0) {\n  return [{ json: { error: true, message: `Missing required fields: ${missing.join(', ')}` } }];\n}\n\nconst validPaymentMethods = ['cash_on_delivery', 'bank_transfer'];\nif (!validPaymentMethods.includes(input.payment_method)) {\n  return [{ json: { error: true, message: `Invalid payment method. Accepted: ${validPaymentMethods.join(', ')}` } }];\n}\n\nreturn [{\n  json: {\n    customerId: input.customer_id,\n    customerName: input.customer_name.trim(),\n    deliveryAddress: input.delivery_address.trim(),\n    contactNumber: (input.contact_number || '').trim(),\n    paymentMethod: input.payment_method,\n    notes: (input.notes || '').trim()\n  }\n}];"
+      },
+      "id": "d-code-validate-order",
+      "name": "Validate Order Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 620]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "d-if-validate-order",
+      "name": "Order Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [960, 620]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/carts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,cart_items(id,quantity,unit_price,product_id,variant_id,products(name,base_price,sale_price),product_variants(size,colour,sku,available_quantity,reserved_quantity))" },
+            { "name": "customer_id", "value": "=eq.{{ $('Validate Order Data').item.json.customerId }}" },
+            { "name": "status", "value": "eq.active" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-get-order-cart",
+      "name": "Get Cart for Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate order totals from current database prices (never trust client)\nconst carts = $input.first().json;\nconst cartArr = Array.isArray(carts) ? carts : [carts];\nconst orderData = $('Validate Order Data').first().json;\n\nif (!cartArr || cartArr.length === 0 || !cartArr[0].cart_items || cartArr[0].cart_items.length === 0) {\n  return [{ json: { error: true, message: 'Your cart is empty. Please add items before placing an order.' } }];\n}\n\nconst cart = cartArr[0];\nlet subtotal = 0;\nconst orderItems = [];\nconst stockErrors = [];\n\nfor (const item of cart.cart_items) {\n  const product = item.products || {};\n  const variant = item.product_variants || {};\n  const available = (variant.available_quantity || 0) - (variant.reserved_quantity || 0);\n  \n  if (available < item.quantity) {\n    stockErrors.push(`${product.name} (${variant.size}/${variant.colour}): only ${available} available`);\n    continue;\n  }\n\n  // Use current database price, not the cart's stored price\n  const currentPrice = product.sale_price || product.base_price;\n  const lineTotal = currentPrice * item.quantity;\n  subtotal += lineTotal;\n\n  orderItems.push({\n    product_id: item.product_id,\n    variant_id: item.variant_id,\n    product_name: product.name,\n    size: variant.size,\n    colour: variant.colour,\n    quantity: item.quantity,\n    unit_price: currentPrice,\n    total_price: lineTotal\n  });\n}\n\nif (stockErrors.length > 0) {\n  return [{ json: { error: true, message: `Some items are no longer available:\\n${stockErrors.join('\\n')}\\nPlease update your cart.` } }];\n}\n\n// Delivery charge: free over 5000 LKR, otherwise 350 LKR\nconst deliveryCharge = subtotal >= 5000 ? 0 : 350;\nconst totalAmount = subtotal + deliveryCharge;\n\nreturn [{\n  json: {\n    cartId: cart.id,\n    customerId: orderData.customerId,\n    customerName: orderData.customerName,\n    deliveryAddress: orderData.deliveryAddress,\n    contactNumber: orderData.contactNumber,\n    paymentMethod: orderData.paymentMethod,\n    notes: orderData.notes,\n    items: orderItems,\n    subtotal,\n    deliveryCharge,\n    discountAmount: 0,\n    totalAmount,\n    currency: 'LKR'\n  }\n}];"
+      },
+      "id": "d-code-calc-totals",
+      "name": "Calculate Totals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 560]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "d-if-calc-ok",
+      "name": "Totals OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1680, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/place_order",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_order: $json }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "d-http-place-order",
+      "name": "Place Order (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the order confirmation response\nconst result = $input.first().json;\nconst orderData = $('Calculate Totals').first().json;\n\nif (result.error || result.code) {\n  return [{ json: { success: false, error: result.message || result.details || 'Failed to place order. Please try again.' } }];\n}\n\nconst orderRef = result.order_ref || result;\n\nreturn [{\n  json: {\n    success: true,\n    order: {\n      order_ref: orderRef,\n      status: 'pending_confirmation',\n      customer_name: orderData.customerName,\n      delivery_address: orderData.deliveryAddress,\n      payment_method: orderData.paymentMethod,\n      items: orderData.items.map(i => ({\n        name: i.product_name,\n        size: i.size,\n        colour: i.colour,\n        quantity: i.quantity,\n        unit_price: i.unit_price,\n        total: i.total_price\n      })),\n      subtotal: orderData.subtotal,\n      delivery_charge: orderData.deliveryCharge,\n      discount: orderData.discountAmount,\n      total: orderData.totalAmount,\n      currency: orderData.currency\n    },\n    message: `Order ${orderRef} has been placed successfully! Status: Pending Confirmation.`\n  }\n}];"
+      },
+      "id": "d-code-order-response",
+      "name": "Order Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// GET ORDER STATUS\nconst input = $input.first().json.body || $input.first().json;\nconst orderRef = (input.order_ref || '').trim();\nconst customerId = input.customer_id;\n\nif (!orderRef || !customerId) {\n  return [{ json: { error: true, message: 'order_ref and customer_id are required.' } }];\n}\n\nreturn [{ json: { orderRef, customerId } }];"
+      },
+      "id": "d-code-status-prep",
+      "name": "Prepare Status Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 840]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/orders",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,order_ref,status,customer_name,delivery_address,payment_method,subtotal,delivery_charge,discount_amount,total_amount,currency,created_at,confirmed_at,delivered_at,order_items(product_name,size,colour,quantity,unit_price,total_price)" },
+            { "name": "order_ref", "value": "=eq.{{ $json.orderRef }}" },
+            { "name": "customer_id", "value": "=eq.{{ $json.customerId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-fetch-order",
+      "name": "Fetch Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 840]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format order status response\nconst orders = $input.first().json;\nconst orderArr = Array.isArray(orders) ? orders : [orders];\n\nif (!orderArr || orderArr.length === 0 || !orderArr[0].id) {\n  return [{ json: { success: false, error: 'Order not found. Please check the order reference number.' } }];\n}\n\nconst order = orderArr[0];\nconst statusLabels = {\n  pending_confirmation: 'Pending Confirmation',\n  confirmed: 'Confirmed',\n  processing: 'Processing',\n  packed: 'Packed',\n  shipped: 'Shipped',\n  delivered: 'Delivered',\n  cancelled: 'Cancelled',\n  return_requested: 'Return Requested'\n};\n\nreturn [{\n  json: {\n    success: true,\n    order: {\n      order_ref: order.order_ref,\n      status: order.status,\n      status_label: statusLabels[order.status] || order.status,\n      customer_name: order.customer_name,\n      delivery_address: order.delivery_address,\n      payment_method: order.payment_method,\n      items: (order.order_items || []).map(i => ({\n        name: i.product_name,\n        size: i.size,\n        colour: i.colour,\n        quantity: i.quantity,\n        unit_price: i.unit_price,\n        total: i.total_price\n      })),\n      subtotal: order.subtotal,\n      delivery_charge: order.delivery_charge,\n      discount: order.discount_amount,\n      total: order.total_amount,\n      currency: order.currency,\n      placed_at: order.created_at,\n      confirmed_at: order.confirmed_at,\n      delivered_at: order.delivered_at\n    }\n  }\n}];"
+      },
+      "id": "d-code-format-status",
+      "name": "Format Order Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 840]
+    },
+    {
+      "parameters": {
+        "jsCode": "// REMOVE FROM CART\nconst input = $input.first().json.body || $input.first().json;\nconst cartItemId = input.cart_item_id;\nconst customerId = input.customer_id;\n\nif (!cartItemId || !customerId) {\n  return [{ json: { error: true, message: 'cart_item_id and customer_id are required.' } }];\n}\n\nreturn [{ json: { cartItemId, customerId } }];"
+      },
+      "id": "d-code-remove-prep",
+      "name": "Prepare Remove",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 1060]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/cart_items",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.cartItemId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "d-http-remove-item",
+      "name": "Remove Cart Item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 1060]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { success: true, message: 'Item removed from your cart.' } }];"
+      },
+      "id": "d-code-remove-response",
+      "name": "Remove Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 1060]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "d-respond-success",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.message || $json.error || 'Operation failed.' }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "d-respond-validation-error",
+      "name": "Validation Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 800]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: 'Unknown operation. Supported: add_to_cart, get_cart, create_order, get_order_status, remove_from_cart' }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "d-respond-unknown",
+      "name": "Unknown Operation",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 1280]
+    },
+    {
+      "parameters": {},
+      "id": "d-error-trigger",
+      "name": "On Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [2160, 800]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: 'Internal error processing your request.' }) }}",
+        "options": { "responseCode": 500 }
+      },
+      "id": "d-respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 1000]
+    }
+  ],
+  "connections": {
+    "Cart/Order Webhook": {
+      "main": [
+        [
+          { "node": "Route Operation", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Route Operation": {
+      "main": [
+        [
+          { "node": "Validate Add to Cart", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Prepare Get Cart", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Validate Order Data", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Prepare Status Query", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Prepare Remove", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Unknown Operation", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Add to Cart": {
+      "main": [
+        [
+          { "node": "Validation OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validation OK?": {
+      "main": [
+        [
+          { "node": "Validation Error Response", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Check Variant Stock", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Variant Stock": {
+      "main": [
+        [
+          { "node": "Verify Stock & Price", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Verify Stock & Price": {
+      "main": [
+        [
+          { "node": "Upsert Cart Item", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Upsert Cart Item": {
+      "main": [
+        [
+          { "node": "Cart Add Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Cart Add Response": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prepare Get Cart": {
+      "main": [
+        [
+          { "node": "Fetch Cart", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Cart": {
+      "main": [
+        [
+          { "node": "Format Cart", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format Cart": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Order Data": {
+      "main": [
+        [
+          { "node": "Order Valid?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Order Valid?": {
+      "main": [
+        [
+          { "node": "Validation Error Response", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Get Cart for Order", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Cart for Order": {
+      "main": [
+        [
+          { "node": "Calculate Totals", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Calculate Totals": {
+      "main": [
+        [
+          { "node": "Totals OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Totals OK?": {
+      "main": [
+        [
+          { "node": "Validation Error Response", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Place Order (RPC)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Place Order (RPC)": {
+      "main": [
+        [
+          { "node": "Order Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Order Response": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prepare Status Query": {
+      "main": [
+        [
+          { "node": "Fetch Order", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Order": {
+      "main": [
+        [
+          { "node": "Format Order Status", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format Order Status": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prepare Remove": {
+      "main": [
+        [
+          { "node": "Remove Cart Item", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Remove Cart Item": {
+      "main": [
+        [
+          { "node": "Remove Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Remove Response": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "On Error": {
+      "main": [
+        [
+          { "node": "Error Response", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp-sales-agent" },
+    { "name": "sub-workflow" }
+  ]
+}
