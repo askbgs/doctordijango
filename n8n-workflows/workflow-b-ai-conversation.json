@@ -1,0 +1,581 @@
+{
+  "name": "AI Sales Conversation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "process-message",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "b1000001-0000-0000-0000-000000000001",
+      "name": "Process Message Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "process-message-id"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/get_or_create_customer",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_whatsapp_id: $json.body?.senderWaId ?? $json.senderWaId, p_phone: $json.body?.senderPhone ?? $json.senderPhone ?? '', p_name: $json.body?.senderName ?? $json.senderName ?? '' }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "b1000001-0000-0000-0000-000000000002",
+      "name": "Get or Create Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 400]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "cust-id", "name": "customerId", "value": "={{ $json.id ?? $json[0]?.id ?? '' }}", "type": "string" },
+            { "id": "wa-id", "name": "senderWaId", "value": "={{ $('Process Message Webhook').item.json.body?.senderWaId ?? $('Process Message Webhook').item.json.senderWaId }}", "type": "string" },
+            { "id": "msg-body", "name": "messageBody", "value": "={{ $('Process Message Webhook').item.json.body?.messageBody ?? $('Process Message Webhook').item.json.messageBody }}", "type": "string" },
+            { "id": "msg-type", "name": "messageType", "value": "={{ $('Process Message Webhook').item.json.body?.messageType ?? $('Process Message Webhook').item.json.messageType ?? 'text' }}", "type": "string" },
+            { "id": "wa-msg-id", "name": "whatsappMessageId", "value": "={{ $('Process Message Webhook').item.json.body?.whatsappMessageId ?? $('Process Message Webhook').item.json.whatsappMessageId }}", "type": "string" },
+            { "id": "phone-id", "name": "phoneNumberId", "value": "={{ $('Process Message Webhook').item.json.body?.phoneNumberId ?? $('Process Message Webhook').item.json.phoneNumberId }}", "type": "string" },
+            { "id": "sender-name", "name": "senderName", "value": "={{ $('Process Message Webhook').item.json.body?.senderName ?? $('Process Message Webhook').item.json.senderName ?? '' }}", "type": "string" },
+            { "id": "pref-lang", "name": "preferredLanguage", "value": "={{ $json.preferred_language ?? 'en' }}", "type": "string" }
+          ]
+        }
+      },
+      "id": "b1000001-0000-0000-0000-000000000003",
+      "name": "Extract Customer Info",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/conversations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "customer_id", "value": "=eq.{{ $json.customerId }}" },
+            { "name": "status", "value": "=in.(active,paused_for_handover)" },
+            { "name": "order", "value": "last_message_at.desc" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b1000001-0000-0000-0000-000000000004",
+      "name": "Get Active Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine if we have an active conversation or need to create one\nconst item = $input.first();\nconst conversations = Array.isArray(item.json) ? item.json : (item.json.data || [item.json]);\nconst customerInfo = $('Extract Customer Info').first().json;\n\nlet conversation = null;\nlet needsCreation = true;\nlet isPaused = false;\n\nif (conversations.length > 0 && conversations[0].id) {\n  conversation = conversations[0];\n  needsCreation = false;\n  isPaused = conversation.status === 'paused_for_handover';\n}\n\nreturn [{\n  json: {\n    ...customerInfo,\n    conversationId: conversation?.id || '',\n    conversationStatus: conversation?.status || 'new',\n    conversationContext: conversation?.context || {},\n    needsCreation: needsCreation,\n    isPaused: isPaused\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000005",
+      "name": "Process Conversation State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "paused-check",
+              "leftValue": "={{ $json.isPaused }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "b1000001-0000-0000-0000-000000000006",
+      "name": "Is Paused for Handover?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Notify that conversation is paused - staff is handling\nconst item = $input.first();\nreturn [{\n  json: {\n    action: 'send_paused_notice',\n    recipientWaId: item.json.senderWaId,\n    phoneNumberId: item.json.phoneNumberId,\n    message: item.json.preferredLanguage === 'ta' \n      ? 'உங்கள் உரையாடலை எங்கள் குழு கையாளுகிறது. விரைவில் பதிலளிப்பார்கள்.'\n      : item.json.preferredLanguage === 'si'\n      ? 'ඔබේ සංවාදය අපේ කණ්ඩායම විසින් හසුරුවනු ලැබේ. ඔවුන් ඉක්මනින් ප්‍රතිචාර දක්වනු ඇත.'\n      : 'Your conversation is being handled by our team. They will respond shortly.',\n    conversationId: item.json.conversationId,\n    customerId: item.json.customerId\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000007",
+      "name": "Build Paused Notice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create new conversation if needed, then fetch message history\nconst item = $input.first();\nconst supabaseUrl = $env.SUPABASE_URL;\nconst serviceKey = $env.SUPABASE_SERVICE_ROLE_KEY;\n\nlet conversationId = item.json.conversationId;\n\n// Create conversation if needed\nif (item.json.needsCreation) {\n  const createResp = await fetch(`${supabaseUrl}/rest/v1/conversations`, {\n    method: 'POST',\n    headers: {\n      'apikey': serviceKey,\n      'Authorization': `Bearer ${serviceKey}`,\n      'Content-Type': 'application/json',\n      'Prefer': 'return=representation'\n    },\n    body: JSON.stringify({\n      customer_id: item.json.customerId,\n      status: 'active',\n      language: item.json.preferredLanguage || 'en',\n      context: {},\n      started_at: new Date().toISOString(),\n      last_message_at: new Date().toISOString()\n    })\n  });\n  const created = await createResp.json();\n  conversationId = Array.isArray(created) ? created[0]?.id : created.id;\n}\n\n// Fetch recent message history\nconst historyResp = await fetch(\n  `${supabaseUrl}/rest/v1/messages?conversation_id=eq.${conversationId}&order=created_at.desc&limit=10`,\n  {\n    headers: {\n      'apikey': serviceKey,\n      'Authorization': `Bearer ${serviceKey}`\n    }\n  }\n);\nconst history = await historyResp.json();\n\nreturn [{\n  json: {\n    ...item.json,\n    conversationId: conversationId,\n    messageHistory: Array.isArray(history) ? history.reverse() : []\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000008",
+      "name": "Ensure Conversation and Get History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the full AI context: system prompt, conversation history, tools\nconst item = $input.first();\nconst shopName = $env.SHOP_NAME || 'Fashion House';\nconst currency = $env.SHOP_CURRENCY || 'LKR';\n\nconst systemPrompt = `You are a friendly and professional sales assistant for ${shopName}, a clothing shop in Sri Lanka.\n\nIMPORTANT RULES:\n- You MUST respond in the same language the customer uses. You support English, Tamil (தமிழ்), and Sinhala (සිංහල).\n- NEVER invent products, prices, stock levels, discounts, delivery promises, or order statuses. Use ONLY data from your tools.\n- NEVER claim an order is confirmed unless the create_order tool succeeds.\n- NEVER change prices or issue refunds without human authorization.\n- NEVER request payment card details, OTPs, or passwords.\n- Keep customer information private.\n- Use concise WhatsApp-friendly replies. Avoid long paragraphs.\n- Use emojis sparingly for a warm tone.\n\nYOUR CAPABILITIES:\n1. Help customers browse and search for clothing (use search_products tool)\n2. Provide product details, prices in ${currency}, sizes, colours, and images\n3. Recommend products based on budget, category, size, colour, style, occasion\n4. Help customers add items to their cart and manage it\n5. Collect order details (name, address, contact, payment method)\n6. Create orders with explicit customer confirmation\n7. Check order status\n8. Answer questions about delivery, payment, exchange, and return policies\n9. Escalate to human staff when needed\n\nORDER FLOW:\n1. Help customer find products\n2. Add to cart when they decide\n3. When ready to order, collect: name, delivery address, contact number, payment method\n4. Show order summary with itemized list and total in ${currency}\n5. Ask for explicit confirmation (\"Yes, place my order\")\n6. Only then call create_order\n7. Share the order reference number\n\nESCALATE TO HUMAN when:\n- Customer requests a refund\n- Customer has a complaint\n- Customer asks about custom/bulk orders\n- Customer requests a discount you cannot authorize\n- You cannot resolve the query after 3 attempts\n- Customer explicitly asks to speak to a person\n\nCurrent currency: ${currency}\nShop: ${shopName}`;\n\n// Build conversation messages from history\nconst messages = [];\nconst history = item.json.messageHistory || [];\n\nfor (const msg of history) {\n  if (msg.direction === 'inbound') {\n    messages.push({ role: 'user', content: msg.content || '' });\n  } else if (msg.direction === 'outbound' && msg.message_type !== 'system') {\n    messages.push({ role: 'assistant', content: msg.content || '' });\n  }\n}\n\n// Add current message\nmessages.push({ role: 'user', content: item.json.messageBody });\n\n// Define tools for the AI\nconst tools = [\n  {\n    name: 'search_products',\n    description: 'Search the product catalog. Returns products matching the criteria with name, price, sizes, colours, and image URLs.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        category: { type: 'string', description: 'Product category: t-shirts, shirts, trousers, jeans, dresses, sarees, kidswear, sportswear, accessories' },\n        min_price: { type: 'number', description: 'Minimum price in LKR' },\n        max_price: { type: 'number', description: 'Maximum price in LKR' },\n        size: { type: 'string', description: 'Size: XS, S, M, L, XL, XXL, or specific sizes' },\n        colour: { type: 'string', description: 'Colour name' },\n        gender: { type: 'string', description: 'Target: men, women, unisex, kids' },\n        keyword: { type: 'string', description: 'Search keyword for name or description' }\n      }\n    }\n  },\n  {\n    name: 'get_product_details',\n    description: 'Get full details of a specific product including all variants, sizes, colours, and stock.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        product_id: { type: 'string', description: 'The product UUID' }\n      },\n      required: ['product_id']\n    }\n  },\n  {\n    name: 'check_stock',\n    description: 'Check if a specific product variant (size + colour) is in stock.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        variant_id: { type: 'string', description: 'The variant UUID' }\n      },\n      required: ['variant_id']\n    }\n  },\n  {\n    name: 'add_to_cart',\n    description: 'Add a product variant to the customer cart.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        variant_id: { type: 'string', description: 'The variant UUID to add' },\n        quantity: { type: 'integer', description: 'Quantity to add', default: 1 }\n      },\n      required: ['variant_id']\n    }\n  },\n  {\n    name: 'get_cart',\n    description: 'Get the current contents of the customer cart with item details and totals.',\n    input_schema: {\n      type: 'object',\n      properties: {}\n    }\n  },\n  {\n    name: 'create_order',\n    description: 'Create an order from the cart. Only call AFTER the customer explicitly confirms. Returns order reference.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        customer_name: { type: 'string', description: 'Customer full name' },\n        delivery_address: { type: 'string', description: 'Full delivery address' },\n        contact_number: { type: 'string', description: 'Contact phone number' },\n        payment_method: { type: 'string', description: 'Payment method: cod (Cash on Delivery) or bank_transfer' }\n      },\n      required: ['customer_name', 'delivery_address', 'contact_number', 'payment_method']\n    }\n  },\n  {\n    name: 'get_order_status',\n    description: 'Get the status and details of an order by order reference number.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        order_ref: { type: 'string', description: 'Order reference like CLT-2026-000001' }\n      },\n      required: ['order_ref']\n    }\n  },\n  {\n    name: 'get_shop_policies',\n    description: 'Get shop policies: delivery, payment methods, returns, exchanges.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        policy_type: { type: 'string', description: 'Policy type: delivery, payment, returns, exchange, all' }\n      },\n      required: ['policy_type']\n    }\n  },\n  {\n    name: 'request_human_handover',\n    description: 'Transfer the conversation to a human staff member. Use when the customer needs help beyond AI capabilities.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        reason: { type: 'string', description: 'Why the handover is needed' },\n        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Priority level' }\n      },\n      required: ['reason']\n    }\n  }\n];\n\nreturn [{\n  json: {\n    ...item.json,\n    systemPrompt: systemPrompt,\n    messages: messages,\n    tools: tools,\n    toolCallCount: 0,\n    maxToolCalls: parseInt($env.AI_TOOL_CALL_LIMIT || '5')\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000009",
+      "name": "Build AI Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 280]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.AI_MODEL || 'claude-sonnet-4-20250514', max_tokens: parseInt($env.AI_MAX_TOKENS || '1024'), system: $json.systemPrompt, messages: $json.messages, tools: $json.tools }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b1000001-0000-0000-0000-00000000000a",
+      "name": "Call Anthropic API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 280],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process the AI response - handle text and tool_use responses\nconst item = $input.first();\nconst aiResponse = item.json;\nconst context = $('Build AI Context').first().json;\n\n// Check for API errors\nif (aiResponse.error || !aiResponse.content) {\n  const fallback = $env.AI_FALLBACK_RESPONSE || \"I'm sorry, I'm having trouble right now. Please try again shortly or type 'help' to speak with our team.\";\n  return [{\n    json: {\n      responseType: 'text',\n      responseText: fallback,\n      isError: true,\n      ...context\n    }\n  }];\n}\n\nconst content = aiResponse.content || [];\nconst stopReason = aiResponse.stop_reason;\n\n// Check if AI wants to use a tool\nif (stopReason === 'tool_use') {\n  const toolUseBlocks = content.filter(b => b.type === 'tool_use');\n  const textBlocks = content.filter(b => b.type === 'text');\n  \n  if (toolUseBlocks.length > 0 && context.toolCallCount < context.maxToolCalls) {\n    const toolCall = toolUseBlocks[0];\n    return [{\n      json: {\n        responseType: 'tool_use',\n        toolName: toolCall.name,\n        toolInput: toolCall.input || {},\n        toolUseId: toolCall.id,\n        prefixText: textBlocks.map(b => b.text).join('\\n'),\n        toolCallCount: context.toolCallCount + 1,\n        ...context\n      }\n    }];\n  }\n}\n\n// Extract text response\nconst textContent = content\n  .filter(b => b.type === 'text')\n  .map(b => b.text)\n  .join('\\n');\n\nreturn [{\n  json: {\n    responseType: 'text',\n    responseText: textContent || \"I'm here to help! What are you looking for today?\",\n    isError: false,\n    ...context\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-00000000000b",
+      "name": "Process AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 280]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.responseType }}",
+                    "rightValue": "tool_use",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Tool Call"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.responseType }}",
+                    "rightValue": "text",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Text Response"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Fallback"
+        }
+      },
+      "id": "b1000001-0000-0000-0000-00000000000c",
+      "name": "Response Type Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [2640, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Execute the tool call against Supabase and return the result\nconst item = $input.first();\nconst toolName = item.json.toolName;\nconst toolInput = item.json.toolInput;\nconst supabaseUrl = $env.SUPABASE_URL;\nconst serviceKey = $env.SUPABASE_SERVICE_ROLE_KEY;\nconst customerId = item.json.customerId;\n\nconst headers = {\n  'apikey': serviceKey,\n  'Authorization': `Bearer ${serviceKey}`,\n  'Content-Type': 'application/json'\n};\n\nlet toolResult = { error: 'Unknown tool' };\n\ntry {\n  switch (toolName) {\n    case 'search_products': {\n      const resp = await fetch(`${supabaseUrl}/rest/v1/rpc/search_products`, {\n        method: 'POST',\n        headers,\n        body: JSON.stringify({\n          p_category: toolInput.category || null,\n          p_min_price: toolInput.min_price || null,\n          p_max_price: toolInput.max_price || null,\n          p_size: toolInput.size || null,\n          p_colour: toolInput.colour || null,\n          p_gender: toolInput.gender || null,\n          p_keyword: toolInput.keyword || null,\n          p_limit: 5\n        })\n      });\n      toolResult = await resp.json();\n      break;\n    }\n    case 'get_product_details': {\n      const resp = await fetch(\n        `${supabaseUrl}/rest/v1/products?id=eq.${toolInput.product_id}&select=*,product_variants(*)`,\n        { headers }\n      );\n      const products = await resp.json();\n      toolResult = products.length > 0 ? products[0] : { error: 'Product not found' };\n      break;\n    }\n    case 'check_stock': {\n      const resp = await fetch(\n        `${supabaseUrl}/rest/v1/product_variants?id=eq.${toolInput.variant_id}&select=*,products(name,base_price,sale_price)`,\n        { headers }\n      );\n      const variants = await resp.json();\n      if (variants.length > 0) {\n        const v = variants[0];\n        toolResult = {\n          variant_id: v.id,\n          size: v.size,\n          colour: v.colour,\n          available: v.available_quantity - v.reserved_quantity,\n          in_stock: (v.available_quantity - v.reserved_quantity) > 0,\n          product_name: v.products?.name\n        };\n      } else {\n        toolResult = { error: 'Variant not found' };\n      }\n      break;\n    }\n    case 'add_to_cart': {\n      const resp = await fetch(`${supabaseUrl}/rest/v1/rpc/add_to_cart`, {\n        method: 'POST',\n        headers,\n        body: JSON.stringify({\n          p_customer_id: customerId,\n          p_variant_id: toolInput.variant_id,\n          p_quantity: toolInput.quantity || 1\n        })\n      });\n      toolResult = await resp.json();\n      break;\n    }\n    case 'get_cart': {\n      const resp = await fetch(\n        `${supabaseUrl}/rest/v1/carts?customer_id=eq.${customerId}&status=eq.active&select=*,cart_items(*,products(name,image_urls),product_variants(size,colour))`,\n        { headers }\n      );\n      const carts = await resp.json();\n      toolResult = carts.length > 0 ? carts[0] : { items: [], message: 'Cart is empty' };\n      break;\n    }\n    case 'create_order': {\n      const resp = await fetch(`${supabaseUrl}/rest/v1/rpc/place_order`, {\n        method: 'POST',\n        headers,\n        body: JSON.stringify({\n          p_customer_id: customerId,\n          p_customer_name: toolInput.customer_name,\n          p_delivery_address: toolInput.delivery_address,\n          p_contact_number: toolInput.contact_number,\n          p_payment_method: toolInput.payment_method\n        })\n      });\n      toolResult = await resp.json();\n      break;\n    }\n    case 'get_order_status': {\n      const resp = await fetch(\n        `${supabaseUrl}/rest/v1/orders?order_ref=eq.${toolInput.order_ref}&customer_id=eq.${customerId}&select=*,order_items(*)`,\n        { headers }\n      );\n      const orders = await resp.json();\n      toolResult = orders.length > 0 ? orders[0] : { error: 'Order not found' };\n      break;\n    }\n    case 'get_shop_policies': {\n      const policyType = toolInput.policy_type || 'all';\n      let query = `${supabaseUrl}/rest/v1/shop_settings`;\n      if (policyType !== 'all') {\n        query += `?key=like.policy_${policyType}*`;\n      } else {\n        query += '?key=like.policy_*';\n      }\n      const resp = await fetch(query, { headers });\n      toolResult = await resp.json();\n      break;\n    }\n    case 'request_human_handover': {\n      // Create handover request\n      const resp = await fetch(`${supabaseUrl}/rest/v1/handover_requests`, {\n        method: 'POST',\n        headers: { ...headers, 'Prefer': 'return=representation' },\n        body: JSON.stringify({\n          conversation_id: item.json.conversationId,\n          customer_id: customerId,\n          reason: toolInput.reason,\n          priority: toolInput.priority || 'medium',\n          status: 'pending'\n        })\n      });\n      // Pause the conversation\n      await fetch(`${supabaseUrl}/rest/v1/conversations?id=eq.${item.json.conversationId}`, {\n        method: 'PATCH',\n        headers,\n        body: JSON.stringify({ status: 'paused_for_handover' })\n      });\n      toolResult = { success: true, message: 'Handover requested. A team member will assist shortly.' };\n      break;\n    }\n  }\n} catch (err) {\n  toolResult = { error: `Tool execution failed: ${err.message}` };\n}\n\n// Build updated messages with tool result for next AI call\nconst updatedMessages = [...item.json.messages];\n\n// Add the assistant's tool_use message\nupdatedMessages.push({\n  role: 'assistant',\n  content: [\n    ...(item.json.prefixText ? [{ type: 'text', text: item.json.prefixText }] : []),\n    {\n      type: 'tool_use',\n      id: item.json.toolUseId,\n      name: toolName,\n      input: toolInput\n    }\n  ]\n});\n\n// Add the tool result\nupdatedMessages.push({\n  role: 'user',\n  content: [\n    {\n      type: 'tool_result',\n      tool_use_id: item.json.toolUseId,\n      content: JSON.stringify(toolResult).substring(0, 4000)\n    }\n  ]\n});\n\nreturn [{\n  json: {\n    ...item.json,\n    messages: updatedMessages,\n    lastToolResult: toolResult,\n    toolCallCount: item.json.toolCallCount\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-00000000000d",
+      "name": "Execute Tool Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.AI_MODEL || 'claude-sonnet-4-20250514', max_tokens: parseInt($env.AI_MAX_TOKENS || '1024'), system: $json.systemPrompt, messages: $json.messages, tools: $json.tools }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "b1000001-0000-0000-0000-00000000000e",
+      "name": "Call Anthropic with Tool Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3120, 160],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process the follow-up AI response after tool execution\nconst item = $input.first();\nconst aiResponse = item.json;\nconst context = $('Execute Tool Call').first().json;\n\n// Check for API errors\nif (aiResponse.error || !aiResponse.content) {\n  const fallback = $env.AI_FALLBACK_RESPONSE || \"I'm sorry, I'm having trouble right now. Please try again shortly or type 'help' to speak with our team.\";\n  return [{\n    json: {\n      responseType: 'text',\n      responseText: fallback,\n      isError: true,\n      ...context\n    }\n  }];\n}\n\nconst content = aiResponse.content || [];\nconst stopReason = aiResponse.stop_reason;\n\n// If AI wants another tool call and we haven't hit the limit\nif (stopReason === 'tool_use' && context.toolCallCount < context.maxToolCalls) {\n  const toolUseBlocks = content.filter(b => b.type === 'tool_use');\n  const textBlocks = content.filter(b => b.type === 'text');\n  \n  if (toolUseBlocks.length > 0) {\n    const toolCall = toolUseBlocks[0];\n    // Add this response to messages for the next iteration\n    const updatedMessages = [...context.messages];\n    updatedMessages.push({\n      role: 'assistant',\n      content: content\n    });\n    \n    return [{\n      json: {\n        responseType: 'tool_use',\n        toolName: toolCall.name,\n        toolInput: toolCall.input || {},\n        toolUseId: toolCall.id,\n        prefixText: textBlocks.map(b => b.text).join('\\n'),\n        messages: updatedMessages,\n        toolCallCount: context.toolCallCount + 1,\n        ...context,\n        messages: updatedMessages\n      }\n    }];\n  }\n}\n\n// Extract final text response\nconst textContent = content\n  .filter(b => b.type === 'text')\n  .map(b => b.text)\n  .join('\\n');\n\nreturn [{\n  json: {\n    responseType: 'text',\n    responseText: textContent || \"Is there anything else I can help you with?\",\n    isError: false,\n    ...context\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-00000000000f",
+      "name": "Process Follow-up Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3360, 160]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.responseType }}",
+                    "rightValue": "tool_use",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "More Tools"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.responseType }}",
+                    "rightValue": "text",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Final Text"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Fallback"
+        }
+      },
+      "id": "b1000001-0000-0000-0000-000000000010",
+      "name": "Check for More Tool Calls",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [3600, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the AI response for WhatsApp - trim, enforce char limits\nconst item = $input.first();\nlet text = item.json.responseText || '';\n\n// WhatsApp message limit is ~4096 chars for text messages\nconst MAX_LENGTH = 4000;\nif (text.length > MAX_LENGTH) {\n  text = text.substring(0, MAX_LENGTH - 50) + '\\n\\n... (message trimmed)';\n}\n\n// Clean up formatting\ntext = text.trim();\n\nreturn [{\n  json: {\n    formattedResponse: text,\n    recipientWaId: item.json.senderWaId,\n    phoneNumberId: item.json.phoneNumberId || $env.META_PHONE_NUMBER_ID,\n    customerId: item.json.customerId,\n    conversationId: item.json.conversationId,\n    messageBody: item.json.messageBody,\n    whatsappMessageId: item.json.whatsappMessageId\n  }\n}];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000011",
+      "name": "Format WhatsApp Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION || 'v21.0' }}/{{ $json.phoneNumberId || $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: $json.recipientWaId, type: 'text', text: { preview_url: false, body: $json.formattedResponse } }) }}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "b1000001-0000-0000-0000-000000000012",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3120, 400],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save both inbound and outbound messages to Supabase\nconst item = $input.first();\nconst context = $('Format WhatsApp Reply').first().json;\nconst supabaseUrl = $env.SUPABASE_URL;\nconst serviceKey = $env.SUPABASE_SERVICE_ROLE_KEY;\n\nconst headers = {\n  'apikey': serviceKey,\n  'Authorization': `Bearer ${serviceKey}`,\n  'Content-Type': 'application/json',\n  'Prefer': 'return=minimal'\n};\n\n// Save inbound message\nawait fetch(`${supabaseUrl}/rest/v1/messages`, {\n  method: 'POST',\n  headers,\n  body: JSON.stringify({\n    conversation_id: context.conversationId,\n    customer_id: context.customerId,\n    direction: 'inbound',\n    message_type: 'text',\n    content: context.messageBody,\n    whatsapp_message_id: context.whatsappMessageId,\n    status: 'received'\n  })\n});\n\n// Save outbound message\nconst waResponse = item.json;\nconst outboundMsgId = waResponse.messages?.[0]?.id || null;\n\nawait fetch(`${supabaseUrl}/rest/v1/messages`, {\n  method: 'POST',\n  headers,\n  body: JSON.stringify({\n    conversation_id: context.conversationId,\n    customer_id: context.customerId,\n    direction: 'outbound',\n    message_type: 'text',\n    content: context.formattedResponse,\n    whatsapp_message_id: outboundMsgId,\n    status: 'sent'\n  })\n});\n\n// Update conversation last_message_at\nawait fetch(`${supabaseUrl}/rest/v1/conversations?id=eq.${context.conversationId}`, {\n  method: 'PATCH',\n  headers,\n  body: JSON.stringify({ last_message_at: new Date().toISOString() })\n});\n\nreturn [{ json: { success: true, conversationId: context.conversationId } }];"
+      },
+      "id": "b1000001-0000-0000-0000-000000000013",
+      "name": "Save Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3360, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION || 'v21.0' }}/{{ $json.phoneNumberId || $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: $json.recipientWaId, type: 'text', text: { body: $json.message } }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "b1000001-0000-0000-0000-000000000014",
+      "name": "Send Paused Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 520]
+    },
+    {
+      "parameters": {
+        "content": "## AI Sales Conversation (Workflow B)\n\n**Purpose:** Processes normalized WhatsApp messages through the AI sales agent.\n\n**Flow:**\n1. Receives normalized message from Workflow A\n2. Gets/creates customer record\n3. Gets/creates active conversation\n4. If paused for handover, sends notice and stops\n5. Builds AI context with history and tools\n6. Calls Anthropic Claude API\n7. Handles tool calls (search, cart, orders, etc.)\n8. Loops tool calls up to AI_TOOL_CALL_LIMIT times\n9. Formats and sends WhatsApp reply\n10. Saves messages to database\n\n**Required Environment Variables:**\n- ANTHROPIC_API_KEY, AI_MODEL, AI_MAX_TOKENS, AI_TOOL_CALL_LIMIT\n- SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY\n- META_WHATSAPP_ACCESS_TOKEN, META_PHONE_NUMBER_ID, WHATSAPP_API_VERSION\n- SHOP_NAME, SHOP_CURRENCY",
+        "height": 440,
+        "width": 420,
+        "color": 4
+      },
+      "id": "b1000001-0000-0000-0000-0000000000f0",
+      "name": "Sticky Note Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-100, 160]
+    },
+    {
+      "parameters": {
+        "content": "## Tool Call Loop\nThe AI can call up to AI_TOOL_CALL_LIMIT tools per conversation turn.\nAfter each tool call, the result is fed back to Claude for a follow-up response.\nThis enables multi-step reasoning (e.g., search → check stock → add to cart).",
+        "height": 140,
+        "width": 700,
+        "color": 6
+      },
+      "id": "b1000001-0000-0000-0000-0000000000f1",
+      "name": "Sticky Note Tools",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2860, 20]
+    }
+  ],
+  "connections": {
+    "Process Message Webhook": {
+      "main": [
+        [
+          { "node": "Get or Create Customer", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get or Create Customer": {
+      "main": [
+        [
+          { "node": "Extract Customer Info", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Extract Customer Info": {
+      "main": [
+        [
+          { "node": "Get Active Conversation", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Active Conversation": {
+      "main": [
+        [
+          { "node": "Process Conversation State", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process Conversation State": {
+      "main": [
+        [
+          { "node": "Is Paused for Handover?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Is Paused for Handover?": {
+      "main": [
+        [
+          { "node": "Build Paused Notice", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Ensure Conversation and Get History", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Paused Notice": {
+      "main": [
+        [
+          { "node": "Send Paused Notice", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ensure Conversation and Get History": {
+      "main": [
+        [
+          { "node": "Build AI Context", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build AI Context": {
+      "main": [
+        [
+          { "node": "Call Anthropic API", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Anthropic API": {
+      "main": [
+        [
+          { "node": "Process AI Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process AI Response": {
+      "main": [
+        [
+          { "node": "Response Type Router", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Response Type Router": {
+      "main": [
+        [
+          { "node": "Execute Tool Call", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Format WhatsApp Reply", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Format WhatsApp Reply", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Execute Tool Call": {
+      "main": [
+        [
+          { "node": "Call Anthropic with Tool Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Anthropic with Tool Result": {
+      "main": [
+        [
+          { "node": "Process Follow-up Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process Follow-up Response": {
+      "main": [
+        [
+          { "node": "Check for More Tool Calls", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check for More Tool Calls": {
+      "main": [
+        [
+          { "node": "Execute Tool Call", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Format WhatsApp Reply", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Format WhatsApp Reply", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format WhatsApp Reply": {
+      "main": [
+        [
+          { "node": "Send WhatsApp Message", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          { "node": "Save Messages", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp" },
+    { "name": "ai" },
+    { "name": "sales" },
+    { "name": "clothing-shop" }
+  ]
+}

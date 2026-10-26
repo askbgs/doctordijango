@@ -1,0 +1,482 @@
+{
+  "name": "E - Human Handover",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow E: Human Handover\n\nPauses AI automation for a conversation and notifies staff.\nAlso provides a resume-automation endpoint for staff to reactivate.\n\n**Environment Variables Required:**\n- SUPABASE_URL\n- SUPABASE_SERVICE_ROLE_KEY\n- META_WHATSAPP_ACCESS_TOKEN\n- META_PHONE_NUMBER_ID\n- WHATSAPP_API_VERSION\n- STAFF_NOTIFICATION_WHATSAPP",
+        "width": 480,
+        "height": 260
+      },
+      "id": "e-sticky-1",
+      "name": "Workflow Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60]
+    },
+    {
+      "parameters": {
+        "content": "## Resume Automation Flow\n\nCalled by staff from the admin dashboard to\nreactivate AI replies for a conversation.",
+        "width": 360,
+        "height": 140
+      },
+      "id": "e-sticky-2",
+      "name": "Resume Flow Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 800]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "human-handover",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e-webhook-handover",
+      "name": "Handover Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 400],
+      "webhookId": "human-handover-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate handover request\nconst input = $input.first().json.body || $input.first().json;\n\nconst conversationId = input.conversation_id;\nconst customerId = input.customer_id;\nconst reason = (input.reason || 'Customer requested human assistance').trim();\nconst priority = ['low', 'medium', 'high', 'urgent'].includes(input.priority) ? input.priority : 'medium';\n\nif (!conversationId || !customerId) {\n  return [{ json: { error: true, message: 'conversation_id and customer_id are required.' } }];\n}\n\nreturn [{ json: { conversationId, customerId, reason, priority } }];"
+      },
+      "id": "e-code-validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "e-if-valid",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/conversations",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('Validate Request').item.json.conversationId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"paused_for_handover\", \"updated_at\": \"{{ new Date().toISOString() }}\" }",
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-pause",
+      "name": "Pause Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/handover_requests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ conversation_id: $('Validate Request').item.json.conversationId, customer_id: $('Validate Request').item.json.customerId, reason: $('Validate Request').item.json.reason, priority: $('Validate Request').item.json.priority, status: 'pending' }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-create-handover",
+      "name": "Create Handover Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 340]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "display_name,phone_number,whatsapp_id" },
+            { "name": "id", "value": "=eq.{{ $('Validate Request').item.json.customerId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-get-customer",
+      "name": "Get Customer Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 340]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "direction,content,created_at" },
+            { "name": "conversation_id", "value": "=eq.{{ $('Validate Request').item.json.conversationId }}" },
+            { "name": "order", "value": "created_at.desc" },
+            { "name": "limit", "value": "5" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-recent-messages",
+      "name": "Get Recent Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the staff notification message\nconst validationData = $('Validate Request').first().json;\nconst customerData = $('Get Customer Info').first().json;\nconst recentMessages = $('Get Recent Messages').first().json;\n\nconst customer = Array.isArray(customerData) ? customerData[0] : customerData;\nconst messages = Array.isArray(recentMessages) ? recentMessages : [recentMessages];\n\nconst customerName = customer?.display_name || 'Unknown Customer';\nconst customerPhone = customer?.phone_number || customer?.whatsapp_id || 'N/A';\n\n// Build recent message summary (most recent 5)\nconst messageLines = messages\n  .filter(m => m && m.content)\n  .reverse()\n  .map(m => {\n    const sender = m.direction === 'inbound' ? 'Customer' : 'AI';\n    const content = m.content.length > 100 ? m.content.substring(0, 100) + '...' : m.content;\n    return `${sender}: ${content}`;\n  })\n  .join('\\n');\n\nconst priorityEmoji = {\n  low: '',\n  medium: '',\n  high: '!',\n  urgent: '!!'\n};\n\nconst notificationText = [\n  `${priorityEmoji[validationData.priority] || ''} HUMAN HANDOVER REQUEST`,\n  '',\n  `Customer: ${customerName}`,\n  `Phone: ${customerPhone}`,\n  `Priority: ${validationData.priority.toUpperCase()}`,\n  `Reason: ${validationData.reason}`,\n  '',\n  'Recent conversation:',\n  messageLines || '(no messages)',\n  '',\n  'Please check the admin dashboard to respond.'\n].join('\\n');\n\nreturn [{ json: { notificationText, customerName, customerPhone } }];"
+      },
+      "id": "e-code-build-notification",
+      "name": "Build Staff Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1880, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $env.STAFF_NOTIFICATION_WHATSAPP, type: 'text', text: { body: $json.notificationText } }) }}",
+        "options": {
+          "timeout": 15000,
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "id": "e-http-notify-staff",
+      "name": "Notify Staff via WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2120, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the handover response for the AI to inform the customer\nconst notifData = $('Build Staff Notification').first().json;\n\nreturn [{\n  json: {\n    success: true,\n    message: 'Your conversation has been transferred to our team. A staff member will be with you shortly. Thank you for your patience!',\n    handover: {\n      status: 'pending',\n      customer_name: notifData.customerName,\n      staff_notified: true\n    }\n  }\n}];"
+      },
+      "id": "e-code-response",
+      "name": "Handover Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2360, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "e-respond-success",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2600, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.message || 'Validation failed.' }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "e-respond-validation-error",
+      "name": "Validation Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 540]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resume-automation",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e-webhook-resume",
+      "name": "Resume Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 960],
+      "webhookId": "resume-automation-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate resume request\nconst input = $input.first().json.body || $input.first().json;\nconst conversationId = input.conversation_id;\nconst handoverId = input.handover_id;\nconst staffId = input.staff_id;\n\nif (!conversationId) {\n  return [{ json: { error: true, message: 'conversation_id is required.' } }];\n}\n\nreturn [{ json: { conversationId, handoverId, staffId } }];"
+      },
+      "id": "e-code-validate-resume",
+      "name": "Validate Resume",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 960]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/conversations",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.conversationId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"active\", \"updated_at\": \"{{ new Date().toISOString() }}\" }",
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-reactivate",
+      "name": "Reactivate Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 960]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/handover_requests",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "conversation_id", "value": "=eq.{{ $('Validate Resume').item.json.conversationId }}" },
+            { "name": "status", "value": "=in.(pending,assigned)" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'resolved', resolved_at: new Date().toISOString(), resolved_by: $('Validate Resume').item.json.staffId || null }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "e-http-resolve-handover",
+      "name": "Resolve Handover",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 960]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'AI automation resumed for this conversation.' }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "e-respond-resume-success",
+      "name": "Resume Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1160, 960]
+    },
+    {
+      "parameters": {},
+      "id": "e-error-trigger",
+      "name": "On Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [2360, 540]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: 'Handover process failed. Please try again.' }) }}",
+        "options": { "responseCode": 500 }
+      },
+      "id": "e-respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2600, 540]
+    }
+  ],
+  "connections": {
+    "Handover Webhook": {
+      "main": [
+        [
+          { "node": "Validate Request", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          { "node": "Valid?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          { "node": "Validation Error", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Pause Conversation", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Pause Conversation": {
+      "main": [
+        [
+          { "node": "Create Handover Request", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Create Handover Request": {
+      "main": [
+        [
+          { "node": "Get Customer Info", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Customer Info": {
+      "main": [
+        [
+          { "node": "Get Recent Messages", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Recent Messages": {
+      "main": [
+        [
+          { "node": "Build Staff Notification", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Staff Notification": {
+      "main": [
+        [
+          { "node": "Notify Staff via WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Notify Staff via WhatsApp": {
+      "main": [
+        [
+          { "node": "Handover Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Handover Response": {
+      "main": [
+        [
+          { "node": "Success Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Resume Webhook": {
+      "main": [
+        [
+          { "node": "Validate Resume", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Resume": {
+      "main": [
+        [
+          { "node": "Reactivate Conversation", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Reactivate Conversation": {
+      "main": [
+        [
+          { "node": "Resolve Handover", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Resolve Handover": {
+      "main": [
+        [
+          { "node": "Resume Success", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "On Error": {
+      "main": [
+        [
+          { "node": "Error Response", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp-sales-agent" },
+    { "name": "sub-workflow" }
+  ]
+}

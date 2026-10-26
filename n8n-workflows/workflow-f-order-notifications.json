@@ -1,0 +1,444 @@
+{
+  "name": "F - Order Status & Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow F — Order Status & Notifications\n\n**Part 1** (top row): Order status query sub-workflow called by the AI agent.\n**Part 2** (middle row): Staff notification when a new order is placed.\n**Part 3** (bottom row): Customer notification when staff updates an order status.\n\n### Environment Variables Required\n- `SUPABASE_URL`\n- `SUPABASE_SERVICE_ROLE_KEY`\n- `META_WHATSAPP_ACCESS_TOKEN`\n- `META_PHONE_NUMBER_ID`\n- `WHATSAPP_API_VERSION`\n- `STAFF_NOTIFICATION_WHATSAPP`",
+        "width": 520,
+        "height": 300
+      },
+      "id": "f-sticky-1",
+      "name": "Workflow Documentation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -200]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "order-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "f-node-1",
+      "name": "Webhook: Order Status Query",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "webhookId": "order-status"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/orders?order_ref=eq.{{ $json.body.order_ref }}&select=*,order_items(*)",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "f-node-2",
+      "name": "Fetch Order from Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-order-exists",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": "0",
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f-node-3",
+      "name": "Order Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate the customer owns this order and format the response\nconst order = $input.first().json[0];\nconst requestBody = $('Webhook: Order Status Query').first().json.body;\nconst customerId = requestBody.customer_id;\n\n// Security: verify the requesting customer owns this order\nif (order.customer_id !== customerId) {\n  return [{ json: { found: false, error: 'Order not found' } }];\n}\n\nconst statusLabels = {\n  pending_confirmation: 'Pending Confirmation',\n  confirmed: 'Confirmed',\n  processing: 'Processing',\n  packed: 'Packed',\n  shipped: 'Shipped',\n  delivered: 'Delivered',\n  cancelled: 'Cancelled',\n  return_requested: 'Return Requested'\n};\n\nconst items = (order.order_items || []).map(item => ({\n  name: item.product_name,\n  size: item.size,\n  colour: item.colour,\n  quantity: item.quantity,\n  unit_price: item.unit_price,\n  total: item.total_price\n}));\n\nreturn [{\n  json: {\n    found: true,\n    order_ref: order.order_ref,\n    status: statusLabels[order.status] || order.status,\n    status_raw: order.status,\n    items: items,\n    subtotal: order.subtotal,\n    delivery_charge: order.delivery_charge,\n    discount: order.discount_amount,\n    total: order.total_amount,\n    currency: order.currency,\n    payment_method: order.payment_method,\n    delivery_address: order.delivery_address,\n    created_at: order.created_at,\n    confirmed_at: order.confirmed_at,\n    delivered_at: order.delivered_at\n  }\n}];"
+      },
+      "id": "f-node-4",
+      "name": "Format Order Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, -60]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "f-node-5",
+      "name": "Respond: Order Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1160, -60]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ found: false, error: 'Order not found' }) }}",
+        "options": {
+          "responseCode": 404
+        }
+      },
+      "id": "f-node-6",
+      "name": "Respond: Not Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 80]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "notify-new-order",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "f-node-10",
+      "name": "Webhook: New Order Notification",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 340],
+      "webhookId": "notify-new-order"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/orders?id=eq.{{ $json.body.order_id }}&select=*,order_items(*),customers(display_name,phone_number)",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "f-node-11",
+      "name": "Get Full Order Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "const order = $input.first().json[0];\nif (!order) return [{ json: { skip: true } }];\n\nconst customer = order.customers || {};\nconst items = (order.order_items || []).map(i =>\n  `  • ${i.product_name} (${i.size}/${i.colour}) x${i.quantity} — LKR ${Number(i.total_price).toLocaleString()}`\n).join('\\n');\n\nconst msg = [\n  `🛍️ *NEW ORDER — ${order.order_ref}*`,\n  '',\n  `👤 Customer: ${customer.display_name || 'N/A'}`,\n  `📞 Phone: ${customer.phone_number || 'N/A'}`,\n  '',\n  `*Items:*`,\n  items,\n  '',\n  `💰 Subtotal: LKR ${Number(order.subtotal).toLocaleString()}`,\n  order.delivery_charge > 0 ? `🚚 Delivery: LKR ${Number(order.delivery_charge).toLocaleString()}` : '',\n  order.discount_amount > 0 ? `🏷️ Discount: -LKR ${Number(order.discount_amount).toLocaleString()}` : '',\n  `*Total: LKR ${Number(order.total_amount).toLocaleString()}*`,\n  '',\n  `📍 Address: ${order.delivery_address}`,\n  `💳 Payment: ${order.payment_method || 'Not specified'}`,\n  '',\n  `⏰ ${new Date(order.created_at).toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}`\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { message: msg, order_id: order.id, order_ref: order.order_ref, skip: false } }];"
+      },
+      "id": "f-node-12",
+      "name": "Format Staff Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.STAFF_NOTIFICATION_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.message) }} }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "f-node-13",
+      "name": "Send Staff WhatsApp Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"order\",\n  \"entity_id\": \"{{ $('Format Staff Alert').item.json.order_id }}\",\n  \"action\": \"new_order_staff_notified\",\n  \"changes\": { \"order_ref\": \"{{ $('Format Staff Alert').item.json.order_ref }}\" }\n}",
+        "options": {}
+      },
+      "id": "f-node-14",
+      "name": "Log Notification Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 340]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "order-status-update",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "f-node-20",
+      "name": "Webhook: Order Status Update",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 680],
+      "webhookId": "order-status-update"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/orders?id=eq.{{ $json.body.order_id }}&select=*,customers(whatsapp_id,display_name,preferred_language)",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "f-node-21",
+      "name": "Get Order & Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const order = $input.first().json[0];\nif (!order) return [{ json: { notify: false } }];\n\nconst customer = order.customers || {};\nconst lang = customer.preferred_language || 'en';\nconst ref = order.order_ref;\nconst status = order.status;\n\n// Only notify for statuses customers care about\nconst notifiable = ['confirmed', 'shipped', 'delivered', 'cancelled'];\nif (!notifiable.includes(status)) {\n  return [{ json: { notify: false, reason: `Status '${status}' is not customer-notifiable` } }];\n}\n\nconst messages = {\n  confirmed: {\n    en: `✅ Your order *${ref}* has been confirmed! We're preparing it now.`,\n    ta: `✅ உங்கள் ஆர்டர் *${ref}* உறுதிசெய்யப்பட்டது! நாங்கள் இப்போது தயார் செய்கிறோம்.`,\n    si: `✅ ඔබේ ඇණවුම *${ref}* තහවුරු කර ඇත! අපි දැන් එය සූදානම් කරමින් සිටිමු.`\n  },\n  shipped: {\n    en: `🚚 Your order *${ref}* is on its way! You'll receive it soon.`,\n    ta: `🚚 உங்கள் ஆர்டர் *${ref}* வழியில் உள்ளது! விரைவில் பெறுவீர்கள்.`,\n    si: `🚚 ඔබේ ඇණවුම *${ref}* මාර්ගයේ පවතී! ඉක්මනින් ලැබේවි.`\n  },\n  delivered: {\n    en: `📦 Your order *${ref}* has been delivered! Thank you for shopping with us. 🙏`,\n    ta: `📦 உங்கள் ஆர்டர் *${ref}* டெலிவரி செய்யப்பட்டது! எங்களுடன் ஷாப்பிங் செய்ததற்கு நன்றி. 🙏`,\n    si: `📦 ඔබේ ඇණවුම *${ref}* බෙදා හරින ලදී! අප සමඟ සාප්පු සවාරි කිරීමට ස්තූතියි. 🙏`\n  },\n  cancelled: {\n    en: `❌ Your order *${ref}* has been cancelled. If you have questions, please reply here or call us.`,\n    ta: `❌ உங்கள் ஆர்டர் *${ref}* ரத்து செய்யப்பட்டது. கேள்விகள் இருந்தால் இங்கே பதிலளிக்கவும் அல்லது எங்களை அழைக்கவும்.`,\n    si: `❌ ඔබේ ඇණවුම *${ref}* අවලංගු කර ඇත. ප්‍රශ්න ඇත්නම් මෙහි පිළිතුරු දෙන්න හෝ අපට කතා කරන්න.`\n  }\n};\n\nconst msg = (messages[status] && messages[status][lang]) || messages[status]?.en || `Order ${ref} status: ${status}`;\n\nreturn [{\n  json: {\n    notify: true,\n    whatsapp_id: customer.whatsapp_id,\n    message: msg,\n    order_id: order.id,\n    order_ref: ref,\n    status: status,\n    language: lang\n  }\n}];"
+      },
+      "id": "f-node-22",
+      "name": "Build Customer Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 680]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-should-notify",
+              "leftValue": "={{ $json.notify }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f-node-23",
+      "name": "Should Notify Customer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [920, 680]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs?entity_id=eq.{{ $json.order_id }}&action=eq.status_notification_{{ $json.status }}&select=id&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f-node-24",
+      "name": "Check Dedup: Already Notified?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 620]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-not-duped",
+              "leftValue": "={{ $json.length ?? 0 }}",
+              "rightValue": "0",
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f-node-25",
+      "name": "Not Already Sent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 620]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.META_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.META_WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $('Build Customer Notification').item.json.whatsapp_id }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($('Build Customer Notification').item.json.message) }} }\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "f-node-26",
+      "name": "Send Customer WhatsApp Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/audit_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entity_type\": \"order\",\n  \"entity_id\": \"{{ $('Build Customer Notification').item.json.order_id }}\",\n  \"action\": \"status_notification_{{ $('Build Customer Notification').item.json.status }}\",\n  \"changes\": {\n    \"order_ref\": \"{{ $('Build Customer Notification').item.json.order_ref }}\",\n    \"language\": \"{{ $('Build Customer Notification').item.json.language }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "f-node-27",
+      "name": "Record Notification Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1880, 560]
+    }
+  ],
+  "connections": {
+    "Webhook: Order Status Query": {
+      "main": [
+        [{ "node": "Fetch Order from Supabase", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Order from Supabase": {
+      "main": [
+        [{ "node": "Order Found?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Order Found?": {
+      "main": [
+        [{ "node": "Format Order Status", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Not Found", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Order Status": {
+      "main": [
+        [{ "node": "Respond: Order Found", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Webhook: New Order Notification": {
+      "main": [
+        [{ "node": "Get Full Order Details", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Full Order Details": {
+      "main": [
+        [{ "node": "Format Staff Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Staff Alert": {
+      "main": [
+        [{ "node": "Send Staff WhatsApp Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Staff WhatsApp Alert": {
+      "main": [
+        [{ "node": "Log Notification Sent", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Webhook: Order Status Update": {
+      "main": [
+        [{ "node": "Get Order & Customer", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Order & Customer": {
+      "main": [
+        [{ "node": "Build Customer Notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Customer Notification": {
+      "main": [
+        [{ "node": "Should Notify Customer?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Notify Customer?": {
+      "main": [
+        [{ "node": "Check Dedup: Already Notified?", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Check Dedup: Already Notified?": {
+      "main": [
+        [{ "node": "Not Already Sent?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Not Already Sent?": {
+      "main": [
+        [{ "node": "Send Customer WhatsApp Update", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Send Customer WhatsApp Update": {
+      "main": [
+        [{ "node": "Record Notification Sent", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "whatsapp-sales-agent" },
+    { "name": "notifications" }
+  ]
+}
